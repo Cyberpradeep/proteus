@@ -6,9 +6,10 @@ from pathlib import Path
 
 from proteus.discovery.attribution import (
     KNOWN_PROVIDERS,
-    attribute_package_name,
     compute_confidence,
     is_dev_tool,
+    is_http_library,
+    resolve_package_provider,
 )
 from proteus.discovery.evidence import (
     discover_source_files,
@@ -61,12 +62,11 @@ class DiscoveryEngine:
         # -------------------------------------------------------------
         manifest_deps = self.manifest_scanner.scan_repository(validated_root)
         for dep in manifest_deps:
-            # Skip standard development, testing, and linting tools
-            if is_dev_tool(dep.package_name):
+            # Skip development/testing tools and generic HTTP transport libraries
+            if is_dev_tool(dep.package_name) or is_http_library(dep.package_name):
                 continue
 
-            provider_id = attribute_package_name(dep.package_name)
-            target_provider = provider_id or dep.package_name.lower().replace("-", "_")
+            target_provider = resolve_package_provider(dep.package_name)
 
             has_manifest[target_provider] = True
             provider_sdks[target_provider] = dep.package_name
@@ -212,7 +212,14 @@ class DiscoveryEngine:
                     provider_id, profile.default_base_url if profile else None
                 )
                 sdk_name = provider_sdks.get(
-                    provider_id, profile.package_names[0] if profile else provider_id
+                    provider_id,
+                    profile.package_names[0]
+                    if profile
+                    else (
+                        provider_id[len("package:") :]
+                        if provider_id.startswith("package:")
+                        else provider_id
+                    ),
                 )
 
             dependencies.append(

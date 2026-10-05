@@ -5,14 +5,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from proteus.discovery.attribution import (
+    GENERIC_CLIENT_NAMES,
     KNOWN_PROVIDERS,
-    attribute_import_module,
+    is_dev_tool,
     is_http_library,
     is_stdlib_module,
+    resolve_module_provider,
 )
 from proteus.discovery.evidence import sanitize_code_snippet, sanitize_url
 from proteus.discovery.http_calls import HttpCallExtractor, extract_module_constants
 from proteus.models.inventory import ConfidenceLevel, EvidenceType
+from proteus.models.uncertainty import UncertaintyState
 
 
 @dataclass
@@ -122,6 +125,8 @@ class PythonSourceVisitor(ast.NodeVisitor):
 
     def _is_local_module(self, mod_name: str) -> bool:
         """Check if an imported module is a local file or directory within the repository."""
+        if not mod_name:
+            return True
         root_name = mod_name.split(".")[0]
         if (self.repo_root / root_name).is_dir() or (self.repo_root / f"{root_name}.py").is_file():
             return True
@@ -129,6 +134,9 @@ class PythonSourceVisitor(ast.NodeVisitor):
         if src_dir.is_dir():
             if (src_dir / root_name).is_dir() or (src_dir / f"{root_name}.py").is_file():
                 return True
+        curr_dir = self.file_path.parent
+        if (curr_dir / root_name).is_dir() or (curr_dir / f"{root_name}.py").is_file():
+            return True
         return False
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -138,10 +146,18 @@ class PythonSourceVisitor(ast.NodeVisitor):
             self.imported_modules[as_name] = mod_name
 
             root_mod = mod_name.split(".")[0]
-            if is_stdlib_module(root_mod) or self._is_local_module(root_mod):
+            if (
+                is_stdlib_module(root_mod)
+                or self._is_local_module(root_mod)
+                or is_http_library(root_mod)
+                or is_dev_tool(root_mod)
+            ):
                 continue
 
-            provider_id = attribute_import_module(mod_name) or root_mod
+            provider_id = resolve_module_provider(mod_name)
+            if not provider_id:
+                continue
+
             snippet = self._get_snippet(node)
 
             self.imports.append(
@@ -158,9 +174,25 @@ class PythonSourceVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.level and node.level > 0:
+            return
+
         mod_name = node.module or ""
         root_mod = mod_name.split(".")[0] if mod_name else ""
-        if is_stdlib_module(root_mod) or (root_mod and self._is_local_module(root_mod)):
+        if (
+            is_stdlib_module(root_mod)
+            or (root_mod and self._is_local_module(root_mod))
+            or is_http_library(root_mod)
+            or is_dev_tool(root_mod)
+        ):
+            # Still track names for HTTP sessions and local references
+            for alias in node.names:
+                item_name = alias.name
+                as_name = alias.asname or item_name
+                self.imported_names[as_name] = (mod_name, item_name)
+                full_path = f"{mod_name}.{item_name}" if mod_name else item_name
+                self.imported_modules[as_name] = full_path
+            self.generic_visit(node)
             return
 
         for alias in node.names:
@@ -170,12 +202,10 @@ class PythonSourceVisitor(ast.NodeVisitor):
             self.imported_names[as_name] = (mod_name, item_name)
             self.imported_modules[as_name] = full_path
 
-            provider_id = (
-                attribute_import_module(mod_name)
-                or attribute_import_module(full_path)
-                or root_mod
-                or as_name
-            )
+            provider_id = resolve_module_provider(mod_name or item_name)
+            if not provider_id:
+                continue
+
             snippet = self._get_snippet(node)
 
             self.imports.append(
@@ -199,7 +229,7 @@ class PythonSourceVisitor(ast.NodeVisitor):
         if not chain:
             return
 
-        # Check for HTTP session creation: session = requests.Session(), client = httpx.Client()
+        # 1. Check for HTTP session creation directly via chain
         if chain in (
             "requests.Session",
             "httpx.Client",
@@ -209,7 +239,14 @@ class PythonSourceVisitor(ast.NodeVisitor):
             self.known_http_sessions.add(var_name)
             return
 
-        # Check for SDK client instantiation
+        # Check if caller was imported from an HTTP library
+        if chain in self.imported_names:
+            src_mod, _ = self.imported_names[chain]
+            if is_http_library(src_mod):
+                self.known_http_sessions.add(var_name)
+                return
+
+        # 2. Check for SDK client instantiation
         base_url: str | None = None
         for kw in call_node.keywords:
             if (
@@ -223,31 +260,54 @@ class PythonSourceVisitor(ast.NodeVisitor):
         provider_id: str | None = None
         class_name = chain.split(".")[-1]
 
-        # Match 1: Imported class name e.g. from openai import OpenAI -> client = OpenAI()
+        # Match 1: Imported class name e.g.
+        # from openai import OpenAI -> client = OpenAI(...)
+        # from resend import Resend -> client = Resend(...)
+        # from resend import Client -> client = Client(...)
         if chain in self.imported_names:
             source_mod, orig_name = self.imported_names[chain]
             src_root = source_mod.split(".")[0] if source_mod else ""
-            if not is_stdlib_module(src_root) and not self._is_local_module(src_root):
-                provider_id = (
-                    attribute_import_module(source_mod)
-                    or attribute_import_module(f"{source_mod}.{orig_name}")
-                    or src_root
-                )
+            if (
+                not is_stdlib_module(src_root)
+                and not self._is_local_module(src_root)
+                and not is_http_library(src_root)
+                and not is_dev_tool(src_root)
+            ):
+                provider_id = resolve_module_provider(source_mod)
                 class_name = orig_name
 
-        # Match 2: Dot notation e.g. client = genai.Client() or client = unregistered_sdk.Client()
+        # Match 2: Dot notation e.g.
+        # client = genai.Client(...)
+        # client = resend.Client(...)
         elif "." in chain:
             parts = chain.split(".")
             caller = parts[0]
-            resolved_mod = self.imported_modules.get(caller, caller)
-            mod_root = resolved_mod.split(".")[0]
-            if not is_stdlib_module(mod_root) and not self._is_local_module(mod_root):
-                provider_id = attribute_import_module(resolved_mod) or mod_root
-                class_name = parts[-1]
+            if caller in self.imported_modules:
+                resolved_mod = self.imported_modules[caller]
+                mod_root = resolved_mod.split(".")[0]
+                if (
+                    not is_stdlib_module(mod_root)
+                    and not self._is_local_module(mod_root)
+                    and not is_http_library(mod_root)
+                    and not is_dev_tool(mod_root)
+                ):
+                    provider_id = resolve_module_provider(resolved_mod)
+                    class_name = parts[-1]
 
         # Match 3: Direct check against known unique client classes only if imported
         elif chain in self.imported_modules:
-            provider_id = attribute_import_module(self.imported_modules[chain])
+            resolved = self.imported_modules[chain]
+            provider_id = resolve_module_provider(resolved)
+
+        # Guard: Generic client class name without import/package evidence
+        # MUST NEVER guess a provider; must remain UNKNOWN
+        if not provider_id and class_name in GENERIC_CLIENT_NAMES:
+            # If it's a known local module import, don't treat it as an external client
+            if chain in self.imported_names:
+                src_mod, _ = self.imported_names[chain]
+                if self._is_local_module(src_mod):
+                    return
+            provider_id = UncertaintyState.UNKNOWN.value
 
         if provider_id:
             self.assigned_clients[var_name] = (provider_id, class_name, base_url)
@@ -326,7 +386,7 @@ class PythonSourceVisitor(ast.NodeVisitor):
             self.generic_visit(node)
             return
 
-        # Check 2: Method call on assigned client instance (e.g. client.generate_content)
+        # Check 2: Method call on assigned client instance (e.g. client.emails.send)
         if caller in self.assigned_clients and len(parts) > 1:
             provider_id, class_name, _ = self.assigned_clients[caller]
             sub_op = ".".join(parts[1:])
@@ -351,47 +411,44 @@ class PythonSourceVisitor(ast.NodeVisitor):
             self.generic_visit(node)
             return
 
-        # Check 3: Direct module API calls (e.g. stripe.PaymentIntent.create or custom_mod.call)
-        resolved_caller = self.imported_modules.get(caller, caller)
-        caller_root = resolved_caller.split(".")[0]
-        direct_provider_id: str | None = attribute_import_module(resolved_caller)
+        # Check 3: Direct module API calls (e.g. stripe.PaymentIntent.create or resend.Emails.send)
+        if caller in self.imported_modules:
+            resolved_caller = self.imported_modules[caller]
+            caller_root = resolved_caller.split(".")[0]
+            direct_provider_id: str | None = None
 
-        if not direct_provider_id and caller in self.imported_names:
-            source_mod, _ = self.imported_names[caller]
-            direct_provider_id = attribute_import_module(source_mod)
+            if (
+                not is_stdlib_module(caller_root)
+                and not self._is_local_module(caller_root)
+                and not is_http_library(caller_root)
+                and not is_dev_tool(caller_root)
+            ):
+                direct_provider_id = resolve_module_provider(resolved_caller)
 
-        if (
-            not direct_provider_id
-            and not is_stdlib_module(caller_root)
-            and not self._is_local_module(caller_root)
-            and not is_http_library(caller_root)
-        ):
-            direct_provider_id = caller_root
+            if direct_provider_id and len(parts) > 1 and not is_http_library(resolved_caller):
+                sub_op = ".".join(parts[1:])
+                profile = KNOWN_PROVIDERS.get(direct_provider_id)
+                if sub_op in GENERIC_CLIENT_NAMES or (profile and sub_op in profile.client_classes):
+                    self.generic_visit(node)
+                    return
 
-        if direct_provider_id and len(parts) > 1 and not is_http_library(resolved_caller):
-            sub_op = ".".join(parts[1:])
-            profile = KNOWN_PROVIDERS.get(direct_provider_id)
-            if profile and sub_op in profile.client_classes:
-                self.generic_visit(node)
-                return
+                snippet = self._get_snippet(node)
 
-            snippet = self._get_snippet(node)
-
-            self.calls.append(
-                AstCallFinding(
-                    operation=sub_op,
-                    symbol=chain,
-                    line=node.lineno,
-                    end_line=getattr(node, "end_lineno", None),
-                    file=self.rel_file,
-                    provider_id=direct_provider_id,
-                    evidence_type=EvidenceType.AST_CALL,
-                    confidence=ConfidenceLevel.CONFIRMED,
-                    snippet=snippet,
-                    method=None,
-                    path=sub_op,
+                self.calls.append(
+                    AstCallFinding(
+                        operation=sub_op,
+                        symbol=chain,
+                        line=node.lineno,
+                        end_line=getattr(node, "end_lineno", None),
+                        file=self.rel_file,
+                        provider_id=direct_provider_id,
+                        evidence_type=EvidenceType.AST_CALL,
+                        confidence=ConfidenceLevel.CONFIRMED,
+                        snippet=snippet,
+                        method=None,
+                        path=sub_op,
+                    )
                 )
-            )
 
         self.generic_visit(node)
 

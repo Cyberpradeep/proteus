@@ -163,9 +163,51 @@ def attribute_url(url: str) -> str | None:
     return None
 
 
+# Generic class names that must NEVER be guessed as a provider without package context
+GENERIC_CLIENT_NAMES = {
+    "Client",
+    "AsyncClient",
+    "API",
+    "ApiClient",
+    "BaseClient",
+    "Session",
+    "AsyncSession",
+    "Connection",
+}
+
+
+def normalize_package_name(package_name: str) -> str:
+    """Normalize package name to lowercase with underscores for stable identifier."""
+    return package_name.lower().replace("-", "_")
+
+
+def format_package_provider(package_name: str) -> str:
+    """Format an unregistered package name into a stable provider identifier e.g. package:resend."""
+    return f"package:{normalize_package_name(package_name)}"
+
+
+def resolve_package_provider(package_name: str) -> str:
+    """Resolve a package name to a registered provider ID or 'package:<name>'."""
+    registered = attribute_package_name(package_name)
+    if registered:
+        return registered
+    return format_package_provider(package_name)
+
+
+def resolve_module_provider(module_name: str) -> str | None:
+    """Resolve an imported module to a registered provider ID or 'package:<root>'."""
+    registered = attribute_import_module(module_name)
+    if registered:
+        return registered
+    root = module_name.split(".")[0]
+    if is_stdlib_module(root) or is_http_library(root) or is_dev_tool(root):
+        return None
+    return format_package_provider(root)
+
+
 def is_http_library(module_name: str) -> bool:
     """Check if imported module is a generic HTTP client library."""
-    root_module = module_name.split(".")[0]
+    root_module = module_name.split(".")[0].lower().replace("-", "_")
     return root_module in HTTP_LIBRARIES
 
 
@@ -178,18 +220,28 @@ def compute_confidence(
 ) -> ConfidenceLevel:
     """Determine confidence level using evidence accumulation.
 
-    Contract: Package presence is candidate; confirmed requires call evidence.
+    Contract:
+    - manifest only -> CANDIDATE
+    - import only -> CANDIDATE
+    - manifest + import -> CANDIDATE
+    - client construction -> STRONG
+    - client construction + method call -> CONFIRMED
+    - api call + known host URL -> CONFIRMED
+    - import + direct module call -> CONFIRMED
     """
     # Multiple converging operational proofs
-    if (has_client_init and has_api_call) or (has_api_call and has_known_url):
+    if (has_client_init and has_api_call) or (has_api_call and (has_known_url or has_import)):
         return ConfidenceLevel.CONFIRMED
 
-    # Strong single evidence: direct client init or known URL call
-    if has_client_init or has_known_url or (has_import and has_api_call):
+    # Direct client init or known URL call
+    if has_client_init or has_known_url:
         return ConfidenceLevel.STRONG
 
     # Candidate only: imported or declared in manifest, but no calls observed
     if has_import or has_manifest:
         return ConfidenceLevel.CANDIDATE
+
+    if has_api_call:
+        return ConfidenceLevel.CONFIRMED
 
     return ConfidenceLevel.UNKNOWN

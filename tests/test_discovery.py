@@ -431,11 +431,14 @@ class TestRealRepoValidation:
 # =========================================================================
 # UNREGISTERED PROVIDER AGNOSTIC DISCOVERY TESTS
 # =========================================================================
+# =========================================================================
+# UNREGISTERED PROVIDER AGNOSTIC DISCOVERY TESTS
+# =========================================================================
 class TestUnregisteredProviderDiscovery:
-    """Verify that discovery engine is provider-agnostic and does not discard unregistered APIs."""
+    """Verify that discovery engine is provider-agnostic and preserves unregistered APIs."""
 
     def test_unregistered_manifest_dependency_is_candidate(self) -> None:
-        """Unregistered package declared in requirements.txt must be discovered, not discarded."""
+        """Unregistered package declared in requirements.txt must be preserved as CANDIDATE."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             req = tmp_path / "requirements.txt"
@@ -445,15 +448,115 @@ class TestUnregisteredProviderDiscovery:
             inventory = engine.discover(tmp_path)
 
             dep_map = {d.provider: d for d in inventory.dependencies}
-            assert "resend" in dep_map
-            dep = dep_map["resend"]
+            assert "package:resend" in dep_map
+            dep = dep_map["package:resend"]
+
+            # Must be candidate only; manifest alone is never confirmed
             assert dep.confidence == ConfidenceLevel.CANDIDATE
             assert dep.sdk == "resend"
             assert len(dep.usages) == 1
-            assert dep.usages[0].evidence_type == EvidenceType.MANIFEST
 
-    def test_unregistered_sdk_import_and_client_call_confirmed(self) -> None:
-        """Unregistered SDK with import + client constructor + call must be confirmed."""
+            u = dep.usages[0]
+            assert u.evidence_type == EvidenceType.MANIFEST
+            assert u.file == "requirements.txt"
+            assert u.line == 1
+            assert "resend" in (u.context_snippet or "")
+            assert "1.2.0" in (u.context_snippet or "")
+
+    def test_unregistered_import_is_candidate(self) -> None:
+        """Unregistered third-party import must be attributed to package:<root> as CANDIDATE."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+
+            # Create a local project file to verify exclusion
+            local_mod = tmp_path / "my_local_helper.py"
+            local_mod.write_text("def helper(): pass\n", encoding="utf-8")
+
+            app = tmp_path / "app.py"
+            app.write_text(
+                (
+                    "import os\n"
+                    "import sys\n"
+                    "import my_local_helper\n"
+                    "import resend\n"
+                    "from sendgrid.helpers.mail import Mail\n"
+                ),
+                encoding="utf-8",
+            )
+
+            engine = DiscoveryEngine()
+            inventory = engine.discover(tmp_path)
+
+            dep_map = {d.provider: d for d in inventory.dependencies}
+
+            # Standard library and local imports MUST be excluded
+            assert "package:os" not in dep_map
+            assert "package:sys" not in dep_map
+            assert "package:my_local_helper" not in dep_map
+
+            # Unregistered third-party imports must be preserved as candidates
+            assert "package:resend" in dep_map
+            assert dep_map["package:resend"].confidence == ConfidenceLevel.CANDIDATE
+            assert dep_map["package:resend"].usages[0].evidence_type == EvidenceType.SDK_IMPORT
+            assert dep_map["package:resend"].usages[0].line == 4
+
+            assert "package:sendgrid" in dep_map
+            assert dep_map["package:sendgrid"].confidence == ConfidenceLevel.CANDIDATE
+            assert dep_map["package:sendgrid"].usages[0].evidence_type == EvidenceType.SDK_IMPORT
+            assert dep_map["package:sendgrid"].usages[0].line == 5
+
+    def test_unregistered_client_construction(self) -> None:
+        """Unregistered client constructor must be preserved with STRONG confidence."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            app = tmp_path / "app.py"
+            app.write_text(
+                (
+                    "from resend import Resend\n\n"
+                    "client = Resend(base_url='https://api.resend.com')\n"
+                ),
+                encoding="utf-8",
+            )
+
+            engine = DiscoveryEngine()
+            inventory = engine.discover(tmp_path)
+
+            dep_map = {d.provider: d for d in inventory.dependencies}
+            assert "package:resend" in dep_map
+            dep = dep_map["package:resend"]
+
+            # Client construction without call evidence is STRONG
+            assert dep.confidence == ConfidenceLevel.STRONG
+            assert dep.base_url == "https://api.resend.com"
+            assert dep.sdk == "resend"
+
+            ops = {u.operation for u in dep.usages}
+            assert "Resend.__init__" in ops
+
+    def test_unregistered_client_construction_dot_notation(self) -> None:
+        """Unregistered client constructor via module dot-notation e.g. resend.Client()."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            app = tmp_path / "app.py"
+            app.write_text(
+                ("import resend\n\nclient = resend.Client()\n"),
+                encoding="utf-8",
+            )
+
+            engine = DiscoveryEngine()
+            inventory = engine.discover(tmp_path)
+
+            dep_map = {d.provider: d for d in inventory.dependencies}
+            assert "package:resend" in dep_map
+            dep = dep_map["package:resend"]
+
+            # Attributed using imported module, confidence STRONG
+            assert dep.confidence == ConfidenceLevel.STRONG
+            ops = {u.operation for u in dep.usages}
+            assert "Client.__init__" in ops
+
+    def test_unregistered_client_api_call_is_confirmed(self) -> None:
+        """Unregistered SDK with client construction + method call must be CONFIRMED."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
             req = tmp_path / "requirements.txt"
@@ -473,8 +576,8 @@ class TestUnregisteredProviderDiscovery:
             inventory = engine.discover(tmp_path)
 
             dep_map = {d.provider: d for d in inventory.dependencies}
-            assert "custom_ai_sdk" in dep_map
-            dep = dep_map["custom_ai_sdk"]
+            assert "package:custom_ai_sdk" in dep_map
+            dep = dep_map["package:custom_ai_sdk"]
 
             # Must be CONFIRMED with exact evidence preserved
             assert dep.confidence == ConfidenceLevel.CONFIRMED
@@ -486,12 +589,48 @@ class TestUnregisteredProviderDiscovery:
             assert EvidenceType.SDK_IMPORT in ev_types
             assert EvidenceType.AST_CALL in ev_types
 
-            # Verify line numbers
-            call_usages = [u for u in dep.usages if u.evidence_type == EvidenceType.AST_CALL]
-            assert any(u.operation == "CustomAI.__init__" for u in call_usages)
-            assert any("generate_text" in (u.operation or "") for u in call_usages)
+            # Verify call correlation
+            ops = [u.operation for u in dep.usages if u.evidence_type == EvidenceType.AST_CALL]
+            assert "CustomAI.__init__" in ops
+            assert "CustomAI.generate_text" in ops
 
-    def test_unregistered_direct_http_call_preserved(self) -> None:
+    def test_generic_client_without_provider_evidence_remains_unknown(self) -> None:
+        """Generic Client() with no provider evidence must remain UNKNOWN, never guessed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            app = tmp_path / "generic_service.py"
+            app.write_text(
+                (
+                    "# Generic Client instantiation with no import evidence\n"
+                    "client = Client()\n"
+                    "client.do_something()\n"
+                    "api = API()\n"
+                    "api.call()\n"
+                ),
+                encoding="utf-8",
+            )
+
+            engine = DiscoveryEngine()
+            inventory = engine.discover(tmp_path)
+
+            dep_map = {d.provider: d for d in inventory.dependencies}
+
+            # MUST NEVER guess google_gemini, openai, or any provider
+            assert "google_gemini" not in dep_map
+            assert "openai" not in dep_map
+            assert "stripe" not in dep_map
+            assert "anthropic" not in dep_map
+
+            # Must remain UNKNOWN
+            assert UncertaintyState.UNKNOWN.value in dep_map
+            unknown_dep = dep_map[UncertaintyState.UNKNOWN.value]
+            assert unknown_dep.confidence == ConfidenceLevel.UNKNOWN
+
+            ops = {u.operation for u in unknown_dep.usages}
+            assert "Client.__init__" in ops
+            assert "Client.do_something" in ops
+
+    def test_unknown_direct_http_host(self) -> None:
         """Direct HTTP call to unregistered endpoint must be preserved under UNKNOWN attribution."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -519,3 +658,53 @@ class TestUnregisteredProviderDiscovery:
             assert http_usage.method == "POST"
             assert http_usage.path == "https://api.custom-payment.net/v2/charge"
             assert http_usage.line == 4
+
+    def test_ambiguous_dynamic_url(self) -> None:
+        """Dynamic URL variable without static resolution must preserve AMBIGUOUS path."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            app = tmp_path / "dynamic.py"
+            app.write_text(
+                (
+                    "import requests\n\n"
+                    "def fetch_dynamic(path):\n"
+                    "    dynamic_url = f'https://custom-host.com/{path}'\n"
+                    "    return requests.get(dynamic_url)\n"
+                ),
+                encoding="utf-8",
+            )
+
+            engine = DiscoveryEngine()
+            inventory = engine.discover(tmp_path)
+
+            dep_map = {d.provider: d for d in inventory.dependencies}
+            assert UncertaintyState.UNKNOWN.value in dep_map
+            unknown_dep = dep_map[UncertaintyState.UNKNOWN.value]
+
+            assert len(unknown_dep.usages) >= 1
+            http_usage = unknown_dep.usages[0]
+            assert http_usage.method == "GET"
+            assert http_usage.path == UncertaintyState.AMBIGUOUS.value
+            assert http_usage.confidence == ConfidenceLevel.UNKNOWN
+
+    def test_known_provider_regression(self) -> None:
+        """Regression test ensuring known providers retain canonical IDs without package: prefix."""
+        engine = DiscoveryEngine()
+        inventory = engine.discover(SAMPLE_REPO_PATH)
+
+        dep_map = {d.provider: d for d in inventory.dependencies}
+
+        # Registered providers must use canonical IDs
+        assert "google_gemini" in dep_map
+        assert "openai" in dep_map
+        assert "stripe" in dep_map
+        assert "anthropic" in dep_map
+
+        assert "package:google_genai" not in dep_map
+        assert "package:openai" not in dep_map
+        assert "package:stripe" not in dep_map
+
+        assert dep_map["google_gemini"].confidence == ConfidenceLevel.CONFIRMED
+        assert dep_map["openai"].confidence == ConfidenceLevel.CONFIRMED
+        assert dep_map["stripe"].confidence == ConfidenceLevel.CONFIRMED
+        assert dep_map["anthropic"].confidence == ConfidenceLevel.CANDIDATE
