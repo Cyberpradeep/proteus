@@ -1,0 +1,13 @@
+{
+  "snapshot_id": "s-00000000-0000-0000-0000-000000000001",
+  "source_id": "src-00000000-0000-0000-0000-000000000001",
+  "retrieved_at": "2026-10-01T12:15:00Z",
+  "content_hash": "9cae3562782f6b574d8875f3fd326d58826ce9d5eb78b3f53f115f222801970d",
+  "status_code": 200,
+  "etag": "\"33a64df551425fcc55e4d42a148795d9f25f89d4\"",
+  "last_modified": "Wed, 01 Oct 2026 12:00:00 GMT",
+  "content_type": "application/json",
+  "raw_content": "{\"openapi\":\"3.0.0\",\"info\":{\"title\":\"Stripe API\",\"version\":\"2026-09-01\"}}",
+  "fetch_status": "SUCCESS",
+  "error_message": null
+}

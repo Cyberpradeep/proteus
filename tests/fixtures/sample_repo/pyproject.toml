@@ -1,0 +1,7 @@
+[project]
+name = "sample-consumer"
+version = "0.1.0"
+dependencies = [
+    "google-genai>=0.1.0",
+    "httpx>=0.27.0",
+]

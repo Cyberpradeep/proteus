@@ -1,0 +1,13 @@
+{
+  "source_id": "src-00000000-0000-0000-0000-000000000001",
+  "provider": "stripe",
+  "source_type": "OPENAPI_SPEC",
+  "location": "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json",
+  "purpose": "payment_intents_contract",
+  "authority": "OFFICIAL_SPEC",
+  "collection_method": "HTTP_GET",
+  "freshness_policy": "1d",
+  "is_verified": true,
+  "validation_notes": "Official Stripe OpenAPI specification repository; passed HTTPS and domain verification",
+  "created_at": "2026-10-01T12:10:00Z"
+}

@@ -1,0 +1,25 @@
+{
+  "change_id": "chg-00000000-0000-0000-0000-000000000001",
+  "old_snapshot_id": "s-00000000-0000-0000-0000-000000000001",
+  "new_snapshot_id": "s-00000000-0000-0000-0000-000000000002",
+  "provider": "stripe",
+  "target": "POST /v1/payment_intents (body.currency)",
+  "change_category": "PARAMETER",
+  "change_type": "parameter_required",
+  "severity": "BREAKING",
+  "old_state": {
+    "name": "currency",
+    "required": false,
+    "default_value": "usd"
+  },
+  "new_state": {
+    "name": "currency",
+    "required": true,
+    "default_value": null
+  },
+  "evidence_references": [
+    "snapshot:s-00000000-0000-0000-0000-000000000001#hash:a1b2c3d4",
+    "snapshot:s-00000000-0000-0000-0000-000000000002#hash:e5f6a7b8"
+  ],
+  "detected_at": "2026-10-02T00:05:00Z"
+}

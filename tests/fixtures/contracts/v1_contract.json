@@ -1,0 +1,39 @@
+{
+  "contract_id": "c-00000000-0000-0000-0000-000000000001",
+  "snapshot_id": "s-00000000-0000-0000-0000-000000000001",
+  "provider": "stripe",
+  "schema_version": "1.0",
+  "state_nature": "DECLARED",
+  "endpoints": [
+    {
+      "operation_id": "createPaymentIntent",
+      "path": "/v1/payment_intents",
+      "method": "POST",
+      "summary": "Create a PaymentIntent",
+      "parameters": [
+        {
+          "name": "amount",
+          "in_location": "body",
+          "required": true,
+          "param_type": "integer",
+          "description": "Amount intended to be collected in cents"
+        },
+        {
+          "name": "currency",
+          "in_location": "body",
+          "required": false,
+          "param_type": "string",
+          "description": "Three-letter ISO currency code",
+          "default_value": "usd"
+        }
+      ],
+      "lifecycle_status": "ACTIVE"
+    }
+  ],
+  "models_or_resources": [],
+  "lifecycle_entries": [],
+  "metadata": {
+    "source_format": "openapi_3.0"
+  },
+  "normalized_at": "2026-10-01T00:00:00Z"
+}

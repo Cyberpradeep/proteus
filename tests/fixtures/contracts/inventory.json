@@ -1,0 +1,49 @@
+{
+  "project_path": "tests/fixtures/sample_repo",
+  "created_at": "2026-10-01T12:00:00Z",
+  "dependencies": [
+    {
+      "provider": "google_gemini",
+      "base_url": "https://generativelanguage.googleapis.com",
+      "sdk": "google-genai",
+      "confidence": "STRONG",
+      "usages": [
+        {
+          "operation": "generate_content",
+          "method": null,
+          "path": null,
+          "file": "src/ai_service.py",
+          "line": 8,
+          "end_line": 10,
+          "symbol": "generate_summary",
+          "evidence_type": "AST_CALL",
+          "confidence": "STRONG",
+          "context_snippet": "return f\"Response for {prompt}\""
+        }
+      ]
+    },
+    {
+      "provider": "stripe",
+      "base_url": "https://api.stripe.com",
+      "sdk": null,
+      "confidence": "CONFIRMED",
+      "usages": [
+        {
+          "operation": "create_charge",
+          "method": "POST",
+          "path": "/v1/payment_intents",
+          "file": "src/billing_service.py",
+          "line": 11,
+          "end_line": 12,
+          "symbol": "client.post",
+          "evidence_type": "HTTP_CALL",
+          "confidence": "CONFIRMED",
+          "context_snippet": "resp = client.post(endpoint, json=payload, headers=headers)"
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "scanner_version": "0.1.0"
+  }
+}

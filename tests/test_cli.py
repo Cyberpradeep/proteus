@@ -1,0 +1,73 @@
+"""Unit tests for PROTEUS minimal CLI skeleton."""
+
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from proteus.cli.main import run_cli
+from proteus.models import RawSnapshot, SourceDefinition, SourceType
+from proteus.storage.database import Database
+
+
+def test_cli_version(capsys: pytest.CaptureFixture[str]) -> None:
+    code = run_cli(["version"])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "PROTEUS v" in captured.out
+
+
+def test_cli_scan_notice(capsys: pytest.CaptureFixture[str]) -> None:
+    code = run_cli(["scan", "tests/fixtures/sample_repo"])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "[PROTEUS] Scanning repository" in captured.out
+    assert "Foundation setup active" in captured.out
+
+
+def test_cli_sources_list(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False) as tf:
+        db_path = tf.name
+
+    try:
+        db = Database(db_path)
+        src = SourceDefinition(
+            source_id="src-cli-test",
+            provider="gemini",
+            source_type=SourceType.LIVE_RESOURCE,
+            location="https://api.example.com",
+            is_verified=True,
+        )
+        db.save_source(src)
+        db.close()
+
+        code = run_cli(["--db", db_path, "sources", "list"])
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "src-cli-test" in captured.out
+        assert "[VERIFIED]" in captured.out
+    finally:
+        Path(db_path).unlink(missing_ok=True)
+
+
+def test_cli_snapshots_and_changes(capsys: pytest.CaptureFixture[str]) -> None:
+    with tempfile.NamedTemporaryFile(suffix=".sqlite3", delete=False) as tf:
+        db_path = tf.name
+
+    try:
+        db = Database(db_path)
+        snap = RawSnapshot.create_from_content("src-cli", "test payload")
+        db.save_snapshot(snap)
+        db.close()
+
+        code = run_cli(["--db", db_path, "snapshots", "list"])
+        assert code == 0
+        captured = capsys.readouterr()
+        assert snap.snapshot_id in captured.out
+
+        code = run_cli(["--db", db_path, "changes"])
+        assert code == 0
+        captured = capsys.readouterr()
+        assert "No changes detected" in captured.out
+    finally:
+        Path(db_path).unlink(missing_ok=True)

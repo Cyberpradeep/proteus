@@ -1,0 +1,25 @@
+{
+  "intent_id": "int-00000000-0000-0000-0000-000000000001",
+  "provider": "google_gemini",
+  "purpose": "text_generation",
+  "relevant_capabilities": [
+    "model_availability",
+    "model_lifecycle",
+    "request_parameters",
+    "response_fields"
+  ],
+  "target_resources": [
+    "gemini-1.5-flash",
+    "gemini-1.5-pro"
+  ],
+  "relevant_properties": [
+    "temperature",
+    "max_output_tokens"
+  ],
+  "evidence": [
+    "src/ai_service.py:8"
+  ],
+  "status": "CONFIRMED",
+  "notes": "Application generates summaries from user inputs",
+  "created_at": "2026-10-01T12:05:00Z"
+}
