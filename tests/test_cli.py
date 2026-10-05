@@ -17,12 +17,37 @@ def test_cli_version(capsys: pytest.CaptureFixture[str]) -> None:
     assert "PROTEUS v" in captured.out
 
 
-def test_cli_scan_notice(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_scan_human_report(capsys: pytest.CaptureFixture[str]) -> None:
     code = run_cli(["scan", "tests/fixtures/sample_repo"])
     assert code == 0
     captured = capsys.readouterr()
-    assert "[PROTEUS] Scanning repository" in captured.out
-    assert "Foundation setup active" in captured.out
+    assert "PROTEUS API DISCOVERY REPORT" in captured.out
+    assert "[CONFIRMED API DEPENDENCIES]" in captured.out
+    assert "google_gemini" in captured.out
+    assert "openai" in captured.out
+    assert "stripe" in captured.out
+    assert "[CANDIDATE DEPENDENCIES" in captured.out
+    assert "anthropic" in captured.out
+    assert "[AMBIGUOUS / UNKNOWN HTTP USAGES" in captured.out
+
+
+def test_cli_scan_json_output(capsys: pytest.CaptureFixture[str]) -> None:
+    code = run_cli(["scan", "tests/fixtures/sample_repo", "--json"])
+    assert code == 0
+    captured = capsys.readouterr()
+    import json
+
+    data = json.loads(captured.out)
+    assert "project_path" in data
+    assert "dependencies" in data
+    assert any(d["provider"] == "google_gemini" for d in data["dependencies"])
+
+
+def test_cli_scan_invalid_path(capsys: pytest.CaptureFixture[str]) -> None:
+    code = run_cli(["scan", "nonexistent/path/nowhere"])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "[ERROR] Invalid repository path" in captured.err
 
 
 def test_cli_sources_list(capsys: pytest.CaptureFixture[str]) -> None:
