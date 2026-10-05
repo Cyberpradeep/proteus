@@ -4,6 +4,9 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from proteus.models import (
     ApiDependency,
     ApiInventory,
@@ -170,6 +173,25 @@ class TestRawSnapshot:
         snap = RawSnapshot.model_validate(data)
         assert snap.status_code == 200
         assert snap.content_hash == compute_sha256(snap.raw_content)
+
+    def test_snapshot_direct_construction_hash_validation(self) -> None:
+        """Verify M-3: direct RawSnapshot construction with matching hash succeeds."""
+        payload = "test payload"
+        snap = RawSnapshot(
+            source_id="src-1",
+            content_hash=compute_sha256(payload),
+            raw_content=payload,
+        )
+        assert snap.content_hash == compute_sha256(payload)
+
+    def test_snapshot_direct_construction_mismatched_hash_fails(self) -> None:
+        """Verify M-3: direct construction with mismatched hash raises ValidationError."""
+        with pytest.raises(ValidationError, match="content_hash mismatch"):
+            RawSnapshot(
+                source_id="src-1",
+                content_hash="invalid_hash_value",
+                raw_content="test payload",
+            )
 
 
 class TestNormalizedContract:

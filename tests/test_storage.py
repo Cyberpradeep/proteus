@@ -27,6 +27,7 @@ from proteus.models import (
     SourceDefinition,
     SourceType,
     StateNature,
+    compute_sha256,
 )
 from proteus.storage.database import Database
 
@@ -74,7 +75,14 @@ class TestDatabaseProjects:
 class TestDatabaseInventory:
     """Test ApiInventory hierarchy persistence."""
 
+    def test_save_inventory_fails_without_project(self, memory_db: Database) -> None:
+        """Verify M-2: referenced project must exist before saving inventory."""
+        inv = ApiInventory(project_path="/repos/uncreated", dependencies=[])
+        with pytest.raises(ValueError, match="Referenced project 'proj-uncreated' does not exist"):
+            memory_db.save_inventory("proj-uncreated", inv)
+
     def test_save_and_get_inventory(self, memory_db: Database) -> None:
+        memory_db.save_project("proj-sample", "Sample Project", "/repos/sample")
         usage1 = ApiUsage(
             operation="generate_content",
             file="src/chat.py",
@@ -160,7 +168,24 @@ class TestDatabaseSources:
 class TestDatabaseSnapshots:
     """Test RawSnapshot persistence and immutability constraint."""
 
+    def test_save_snapshot_fails_without_source(self, memory_db: Database) -> None:
+        """Verify M-1: referenced source must exist before saving snapshots."""
+        snap = RawSnapshot.create_from_content(
+            source_id="src-nonexistent",
+            raw_content="some content",
+        )
+        with pytest.raises(ValueError, match="Referenced source 'src-nonexistent' does not exist"):
+            memory_db.save_snapshot(snap)
+
     def test_save_and_get_snapshot(self, memory_db: Database) -> None:
+        memory_db.save_source(
+            SourceDefinition(
+                source_id="src-test",
+                provider="gemini",
+                source_type=SourceType.LIVE_RESOURCE,
+                location="https://api.gemini.example/models",
+            )
+        )
         snap = RawSnapshot.create_from_content(
             source_id="src-test",
             raw_content='{"models": ["gemini-1.5-flash"]}',
@@ -175,6 +200,14 @@ class TestDatabaseSnapshots:
 
     def test_snapshot_immutability(self, memory_db: Database) -> None:
         """Verify that overwriting an existing snapshot fails."""
+        memory_db.save_source(
+            SourceDefinition(
+                source_id="src-immutable",
+                provider="gemini",
+                source_type=SourceType.LIVE_RESOURCE,
+                location="https://api.gemini.example/models",
+            )
+        )
         snap = RawSnapshot.create_from_content(
             source_id="src-immutable",
             raw_content="first version",
@@ -182,12 +215,13 @@ class TestDatabaseSnapshots:
         memory_db.save_snapshot(snap)
 
         # Attempt to insert identical snapshot_id with altered content
+        tampered_content = "tampered content"
         snap_tampered = RawSnapshot(
             snapshot_id=snap.snapshot_id,
             source_id=snap.source_id,
             retrieved_at=snap.retrieved_at,
-            content_hash="tampered_hash",
-            raw_content="tampered content",
+            content_hash=compute_sha256(tampered_content),
+            raw_content=tampered_content,
         )
         with pytest.raises(ValueError, match="already exists. Snapshots are immutable"):
             memory_db.save_snapshot(snap_tampered)
@@ -197,6 +231,14 @@ class TestDatabaseContractsAndChanges:
     """Test NormalizedContract and ChangeEvent persistence."""
 
     def test_save_and_get_contract(self, memory_db: Database) -> None:
+        memory_db.save_source(
+            SourceDefinition(
+                source_id="src-c",
+                provider="stripe",
+                source_type=SourceType.OPENAPI_SPEC,
+                location="https://api.stripe.com/openapi.json",
+            )
+        )
         snap = RawSnapshot.create_from_content(
             source_id="src-c",
             raw_content="dummy",
@@ -225,6 +267,14 @@ class TestDatabaseContractsAndChanges:
         assert loaded.endpoints[0].parameters[0].name == "amount"
 
     def test_save_and_get_change(self, memory_db: Database) -> None:
+        memory_db.save_source(
+            SourceDefinition(
+                source_id="src-c",
+                provider="stripe",
+                source_type=SourceType.OPENAPI_SPEC,
+                location="https://api.stripe.com/openapi.json",
+            )
+        )
         snap1 = RawSnapshot.create_from_content(source_id="src-c", raw_content="v1")
         snap2 = RawSnapshot.create_from_content(source_id="src-c", raw_content="v2")
         memory_db.save_snapshot(snap1)
@@ -251,6 +301,42 @@ class TestDatabaseContractsAndChanges:
         assert loaded.old_state == {"required": False}
         assert loaded.new_state == {"required": True}
         assert len(memory_db.list_changes(provider="stripe")) == 1
+
+    def test_save_change_collision_fails(self, memory_db: Database) -> None:
+        """Verify M-4: change events are audit records and cannot be overwritten."""
+        memory_db.save_source(
+            SourceDefinition(
+                source_id="src-audit",
+                provider="stripe",
+                source_type=SourceType.OPENAPI_SPEC,
+                location="https://api.stripe.com/openapi.json",
+            )
+        )
+        snap = RawSnapshot.create_from_content(source_id="src-audit", raw_content="snap")
+        memory_db.save_snapshot(snap)
+
+        change1 = ChangeEvent(
+            change_id="chg-audit-1",
+            new_snapshot_id=snap.snapshot_id,
+            provider="stripe",
+            target="POST /v1/charges",
+            change_category=ChangeCategory.ENDPOINT,
+            change_type="endpoint_removed",
+            severity=ChangeSeverity.BREAKING,
+        )
+        memory_db.save_change(change1)
+
+        change2 = ChangeEvent(
+            change_id="chg-audit-1",
+            new_snapshot_id=snap.snapshot_id,
+            provider="stripe",
+            target="POST /v1/charges (altered)",
+            change_category=ChangeCategory.ENDPOINT,
+            change_type="endpoint_modified",
+            severity=ChangeSeverity.NON_BREAKING,
+        )
+        with pytest.raises(ValueError, match="already exists. Change events are audit records"):
+            memory_db.save_change(change2)
 
 
 class TestDatabaseDiskPersistence:

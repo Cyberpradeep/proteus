@@ -130,17 +130,9 @@ class Database:
             # Ensure project exists
             proj = conn.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
             if not proj:
-                conn.execute(
-                    """
-                    INSERT INTO projects (id, name, repository_path, created_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        project_id,
-                        Path(inventory.project_path).name or "unnamed_project",
-                        inventory.project_path,
-                        inventory.created_at.isoformat(),
-                    ),
+                raise ValueError(
+                    f"Referenced project '{project_id}' does not exist. "
+                    "Projects must be created before saving inventory."
                 )
 
             # Clear previous discovery dependencies for this project
@@ -435,27 +427,14 @@ class Database:
                     "Snapshots are immutable and cannot be overwritten."
                 )
 
-            # Verify foreign key source exists or auto-register minimal stub
+            # Ensure referenced source exists
             src = conn.execute(
                 "SELECT id FROM sources WHERE id = ?", (snapshot.source_id,)
             ).fetchone()
             if not src:
-                conn.execute(
-                    """
-                    INSERT INTO sources (
-                        id, provider, source_type, location,
-                        authority, collection_method, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        snapshot.source_id,
-                        "unknown_provider",
-                        SourceType.UNKNOWN.value,
-                        "unspecified",
-                        AuthorityClass.CANDIDATE_UNVERIFIED.value,
-                        CollectionMethod.HTTP_GET.value,
-                        snapshot.retrieved_at.isoformat(),
-                    ),
+                raise ValueError(
+                    f"Referenced source '{snapshot.source_id}' does not exist. "
+                    "Sources must be registered before saving snapshots."
                 )
 
             conn.execute(
@@ -598,7 +577,17 @@ class Database:
     # Change Event Operations
     # -------------------------------------------------------------------------
     def save_change(self, change: ChangeEvent) -> None:
+        """Persist ChangeEvent ensuring append-only audit semantics."""
         with self._connection() as conn:
+            existing = conn.execute(
+                "SELECT id FROM changes WHERE id = ?", (change.change_id,)
+            ).fetchone()
+            if existing:
+                raise ValueError(
+                    f"ChangeEvent {change.change_id} already exists. "
+                    "Change events are audit records and cannot be overwritten."
+                )
+
             conn.execute(
                 """
                 INSERT INTO changes (
@@ -606,15 +595,6 @@ class Database:
                     change_category, change_type, severity, old_state_json,
                     new_state_json, evidence_refs_json, detected_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    target = excluded.target,
-                    change_category = excluded.change_category,
-                    change_type = excluded.change_type,
-                    severity = excluded.severity,
-                    old_state_json = excluded.old_state_json,
-                    new_state_json = excluded.new_state_json,
-                    evidence_refs_json = excluded.evidence_refs_json,
-                    detected_at = excluded.detected_at
                 """,
                 (
                     change.change_id,

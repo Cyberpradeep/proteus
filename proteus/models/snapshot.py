@@ -5,7 +5,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class FetchStatus(StrEnum):
@@ -68,6 +68,16 @@ class RawSnapshot(BaseModel):
         default=None,
         description="Error details if fetch or parsing encountered an issue",
     )
+
+    @model_validator(mode="after")
+    def verify_content_hash(self) -> "RawSnapshot":
+        """Enforce cryptographic content_hash integrity on all instances."""
+        expected_hash = compute_sha256(self.raw_content)
+        if self.content_hash != expected_hash:
+            raise ValueError(
+                f"content_hash mismatch: expected {expected_hash}, got {self.content_hash}"
+            )
+        return self
 
     @classmethod
     def create_from_content(

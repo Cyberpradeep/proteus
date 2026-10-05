@@ -56,6 +56,14 @@ def test_cli_snapshots_and_changes(capsys: pytest.CaptureFixture[str]) -> None:
 
     try:
         db = Database(db_path)
+        db.save_source(
+            SourceDefinition(
+                source_id="src-cli",
+                provider="test_provider",
+                source_type=SourceType.LIVE_RESOURCE,
+                location="https://api.example.com",
+            )
+        )
         snap = RawSnapshot.create_from_content("src-cli", "test payload")
         db.save_snapshot(snap)
         db.close()
