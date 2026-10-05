@@ -8,6 +8,7 @@ from proteus.discovery.attribution import (
     KNOWN_PROVIDERS,
     attribute_package_name,
     compute_confidence,
+    is_dev_tool,
 )
 from proteus.discovery.evidence import (
     discover_source_files,
@@ -60,29 +61,33 @@ class DiscoveryEngine:
         # -------------------------------------------------------------
         manifest_deps = self.manifest_scanner.scan_repository(validated_root)
         for dep in manifest_deps:
+            # Skip standard development, testing, and linting tools
+            if is_dev_tool(dep.package_name):
+                continue
+
             provider_id = attribute_package_name(dep.package_name)
-            target_provider = provider_id or dep.package_name.lower()
+            target_provider = provider_id or dep.package_name.lower().replace("-", "_")
 
-            # Record if it's a known provider candidate or SDK
-            if provider_id:
-                has_manifest[target_provider] = True
-                provider_sdks[target_provider] = dep.package_name
+            has_manifest[target_provider] = True
+            provider_sdks[target_provider] = dep.package_name
 
-                provider_usages[target_provider].append(
-                    ApiUsage(
-                        operation="declare_dependency",
-                        method=None,
-                        path=None,
-                        file=dep.manifest_file,
-                        line=dep.line,
-                        symbol=f"{dep.package_name} ({dep.section})",
-                        evidence_type=EvidenceType.MANIFEST,
-                        confidence=ConfidenceLevel.CANDIDATE,
-                        context_snippet=f"{dep.package_name}=={dep.version_spec}"
+            provider_usages[target_provider].append(
+                ApiUsage(
+                    operation="declare_dependency",
+                    method=None,
+                    path=None,
+                    file=dep.manifest_file,
+                    line=dep.line,
+                    symbol=f"{dep.package_name} ({dep.section})",
+                    evidence_type=EvidenceType.MANIFEST,
+                    confidence=ConfidenceLevel.CANDIDATE,
+                    context_snippet=(
+                        f"{dep.package_name}=={dep.version_spec}"
                         if dep.version_spec
-                        else dep.package_name,
-                    )
+                        else dep.package_name
+                    ),
                 )
+            )
 
         # -------------------------------------------------------------
         # Layer 2 & 3: Python AST & HTTP Call Scanning
@@ -99,48 +104,46 @@ class DiscoveryEngine:
 
             # 2a. Imports
             for imp in visitor.imports:
-                if imp.provider_id:
-                    has_import[imp.provider_id] = True
-                    symbol_desc = (
-                        f"from {imp.module} import {imp.name}"
-                        if imp.name
-                        else f"import {imp.module}"
+                target_provider = imp.provider_id or UncertaintyState.UNKNOWN.value
+                has_import[target_provider] = True
+                symbol_desc = (
+                    f"from {imp.module} import {imp.name}" if imp.name else f"import {imp.module}"
+                )
+                provider_usages[target_provider].append(
+                    ApiUsage(
+                        operation="import",
+                        method=None,
+                        path=None,
+                        file=imp.file,
+                        line=imp.line,
+                        symbol=symbol_desc,
+                        evidence_type=EvidenceType.SDK_IMPORT,
+                        confidence=ConfidenceLevel.CANDIDATE,
+                        context_snippet=imp.snippet,
                     )
-                    provider_usages[imp.provider_id].append(
-                        ApiUsage(
-                            operation="import",
-                            method=None,
-                            path=None,
-                            file=imp.file,
-                            line=imp.line,
-                            symbol=symbol_desc,
-                            evidence_type=EvidenceType.SDK_IMPORT,
-                            confidence=ConfidenceLevel.CANDIDATE,
-                            context_snippet=imp.snippet,
-                        )
-                    )
+                )
 
             # 2b. Client Inits
             for init in visitor.client_inits:
-                if init.provider_id:
-                    has_client_init[init.provider_id] = True
-                    if init.base_url:
-                        provider_base_urls[init.provider_id] = init.base_url
+                target_provider = init.provider_id or UncertaintyState.UNKNOWN.value
+                has_client_init[target_provider] = True
+                if init.base_url:
+                    provider_base_urls[target_provider] = init.base_url
 
-                    provider_usages[init.provider_id].append(
-                        ApiUsage(
-                            operation=f"{init.class_name}.__init__",
-                            method=None,
-                            path=None,
-                            file=init.file,
-                            line=init.line,
-                            end_line=init.end_line,
-                            symbol=f"{init.variable_name} = {init.class_name}(...)",
-                            evidence_type=EvidenceType.AST_CALL,
-                            confidence=ConfidenceLevel.STRONG,
-                            context_snippet=init.snippet,
-                        )
+                provider_usages[target_provider].append(
+                    ApiUsage(
+                        operation=f"{init.class_name}.__init__",
+                        method=None,
+                        path=None,
+                        file=init.file,
+                        line=init.line,
+                        end_line=init.end_line,
+                        symbol=f"{init.variable_name} = {init.class_name}(...)",
+                        evidence_type=EvidenceType.AST_CALL,
+                        confidence=ConfidenceLevel.STRONG,
+                        context_snippet=init.snippet,
                     )
+                )
 
             # 2c. Method & HTTP Calls
             for call in visitor.calls:
@@ -153,8 +156,7 @@ class DiscoveryEngine:
                     else:
                         has_api_call[target_provider] = True
                 else:
-                    if call.provider_id:
-                        has_api_call[call.provider_id] = True
+                    has_api_call[target_provider] = True
 
                 provider_usages[target_provider].append(
                     ApiUsage(
@@ -210,7 +212,7 @@ class DiscoveryEngine:
                     provider_id, profile.default_base_url if profile else None
                 )
                 sdk_name = provider_sdks.get(
-                    provider_id, profile.package_names[0] if profile else None
+                    provider_id, profile.package_names[0] if profile else provider_id
                 )
 
             dependencies.append(

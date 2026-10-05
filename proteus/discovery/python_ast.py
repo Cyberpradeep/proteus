@@ -8,6 +8,7 @@ from proteus.discovery.attribution import (
     KNOWN_PROVIDERS,
     attribute_import_module,
     is_http_library,
+    is_stdlib_module,
 )
 from proteus.discovery.evidence import sanitize_code_snippet, sanitize_url
 from proteus.discovery.http_calls import HttpCallExtractor, extract_module_constants
@@ -119,13 +120,28 @@ class PythonSourceVisitor(ast.NodeVisitor):
         raw_snippet = "\n".join(self.lines[start_line - 1 : end_line]).strip()
         return sanitize_code_snippet(raw_snippet)
 
+    def _is_local_module(self, mod_name: str) -> bool:
+        """Check if an imported module is a local file or directory within the repository."""
+        root_name = mod_name.split(".")[0]
+        if (self.repo_root / root_name).is_dir() or (self.repo_root / f"{root_name}.py").is_file():
+            return True
+        src_dir = self.repo_root / "src"
+        if src_dir.is_dir():
+            if (src_dir / root_name).is_dir() or (src_dir / f"{root_name}.py").is_file():
+                return True
+        return False
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             mod_name = alias.name
             as_name = alias.asname or mod_name
             self.imported_modules[as_name] = mod_name
 
-            provider_id = attribute_import_module(mod_name)
+            root_mod = mod_name.split(".")[0]
+            if is_stdlib_module(root_mod) or self._is_local_module(root_mod):
+                continue
+
+            provider_id = attribute_import_module(mod_name) or root_mod
             snippet = self._get_snippet(node)
 
             self.imports.append(
@@ -143,6 +159,10 @@ class PythonSourceVisitor(ast.NodeVisitor):
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         mod_name = node.module or ""
+        root_mod = mod_name.split(".")[0] if mod_name else ""
+        if is_stdlib_module(root_mod) or (root_mod and self._is_local_module(root_mod)):
+            return
+
         for alias in node.names:
             item_name = alias.name
             as_name = alias.asname or item_name
@@ -150,7 +170,12 @@ class PythonSourceVisitor(ast.NodeVisitor):
             self.imported_names[as_name] = (mod_name, item_name)
             self.imported_modules[as_name] = full_path
 
-            provider_id = attribute_import_module(mod_name) or attribute_import_module(full_path)
+            provider_id = (
+                attribute_import_module(mod_name)
+                or attribute_import_module(full_path)
+                or root_mod
+                or as_name
+            )
             snippet = self._get_snippet(node)
 
             self.imports.append(
@@ -201,17 +226,24 @@ class PythonSourceVisitor(ast.NodeVisitor):
         # Match 1: Imported class name e.g. from openai import OpenAI -> client = OpenAI()
         if chain in self.imported_names:
             source_mod, orig_name = self.imported_names[chain]
-            provider_id = attribute_import_module(source_mod) or attribute_import_module(
-                f"{source_mod}.{orig_name}"
-            )
-            class_name = orig_name
+            src_root = source_mod.split(".")[0] if source_mod else ""
+            if not is_stdlib_module(src_root) and not self._is_local_module(src_root):
+                provider_id = (
+                    attribute_import_module(source_mod)
+                    or attribute_import_module(f"{source_mod}.{orig_name}")
+                    or src_root
+                )
+                class_name = orig_name
 
-        # Match 2: Dot notation e.g. client = genai.Client() where genai is imported module
+        # Match 2: Dot notation e.g. client = genai.Client() or client = unregistered_sdk.Client()
         elif "." in chain:
             parts = chain.split(".")
             caller = parts[0]
             resolved_mod = self.imported_modules.get(caller, caller)
-            provider_id = attribute_import_module(resolved_mod)
+            mod_root = resolved_mod.split(".")[0]
+            if not is_stdlib_module(mod_root) and not self._is_local_module(mod_root):
+                provider_id = attribute_import_module(resolved_mod) or mod_root
+                class_name = parts[-1]
 
         # Match 3: Direct check against known unique client classes only if imported
         elif chain in self.imported_modules:
@@ -319,13 +351,22 @@ class PythonSourceVisitor(ast.NodeVisitor):
             self.generic_visit(node)
             return
 
-        # Check 3: Direct module API calls (e.g. stripe.PaymentIntent.create)
+        # Check 3: Direct module API calls (e.g. stripe.PaymentIntent.create or custom_mod.call)
         resolved_caller = self.imported_modules.get(caller, caller)
+        caller_root = resolved_caller.split(".")[0]
         direct_provider_id: str | None = attribute_import_module(resolved_caller)
 
         if not direct_provider_id and caller in self.imported_names:
             source_mod, _ = self.imported_names[caller]
             direct_provider_id = attribute_import_module(source_mod)
+
+        if (
+            not direct_provider_id
+            and not is_stdlib_module(caller_root)
+            and not self._is_local_module(caller_root)
+            and not is_http_library(caller_root)
+        ):
+            direct_provider_id = caller_root
 
         if direct_provider_id and len(parts) > 1 and not is_http_library(resolved_caller):
             sub_op = ".".join(parts[1:])

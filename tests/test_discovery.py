@@ -426,3 +426,96 @@ class TestRealRepoValidation:
         for u in openai_dep.usages:
             assert u.line >= 1
             assert (REAL_REPO_PATH / u.file).exists()
+
+
+# =========================================================================
+# UNREGISTERED PROVIDER AGNOSTIC DISCOVERY TESTS
+# =========================================================================
+class TestUnregisteredProviderDiscovery:
+    """Verify that discovery engine is provider-agnostic and does not discard unregistered APIs."""
+
+    def test_unregistered_manifest_dependency_is_candidate(self) -> None:
+        """Unregistered package declared in requirements.txt must be discovered, not discarded."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            req = tmp_path / "requirements.txt"
+            req.write_text("resend>=1.2.0\n", encoding="utf-8")
+
+            engine = DiscoveryEngine()
+            inventory = engine.discover(tmp_path)
+
+            dep_map = {d.provider: d for d in inventory.dependencies}
+            assert "resend" in dep_map
+            dep = dep_map["resend"]
+            assert dep.confidence == ConfidenceLevel.CANDIDATE
+            assert dep.sdk == "resend"
+            assert len(dep.usages) == 1
+            assert dep.usages[0].evidence_type == EvidenceType.MANIFEST
+
+    def test_unregistered_sdk_import_and_client_call_confirmed(self) -> None:
+        """Unregistered SDK with import + client constructor + call must be confirmed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            req = tmp_path / "requirements.txt"
+            req.write_text("custom-ai-sdk>=2.0.0\n", encoding="utf-8")
+
+            app = tmp_path / "app.py"
+            app.write_text(
+                (
+                    "from custom_ai_sdk import CustomAI\n\n"
+                    "client = CustomAI(base_url='https://api.custom-ai.org/v1')\n"
+                    "result = client.generate_text('hello')\n"
+                ),
+                encoding="utf-8",
+            )
+
+            engine = DiscoveryEngine()
+            inventory = engine.discover(tmp_path)
+
+            dep_map = {d.provider: d for d in inventory.dependencies}
+            assert "custom_ai_sdk" in dep_map
+            dep = dep_map["custom_ai_sdk"]
+
+            # Must be CONFIRMED with exact evidence preserved
+            assert dep.confidence == ConfidenceLevel.CONFIRMED
+            assert dep.base_url == "https://api.custom-ai.org/v1"
+            assert dep.sdk == "custom-ai-sdk"
+
+            ev_types = {u.evidence_type for u in dep.usages}
+            assert EvidenceType.MANIFEST in ev_types
+            assert EvidenceType.SDK_IMPORT in ev_types
+            assert EvidenceType.AST_CALL in ev_types
+
+            # Verify line numbers
+            call_usages = [u for u in dep.usages if u.evidence_type == EvidenceType.AST_CALL]
+            assert any(u.operation == "CustomAI.__init__" for u in call_usages)
+            assert any("generate_text" in (u.operation or "") for u in call_usages)
+
+    def test_unregistered_direct_http_call_preserved(self) -> None:
+        """Direct HTTP call to unregistered endpoint must be preserved under UNKNOWN attribution."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            app = tmp_path / "payment.py"
+            app.write_text(
+                (
+                    "import requests\n\n"
+                    "def charge():\n"
+                    "    return requests.post('https://api.custom-payment.net/v2/charge')\n"
+                ),
+                encoding="utf-8",
+            )
+
+            engine = DiscoveryEngine()
+            inventory = engine.discover(tmp_path)
+
+            dep_map = {d.provider: d for d in inventory.dependencies}
+            assert UncertaintyState.UNKNOWN.value in dep_map
+            unknown_dep = dep_map[UncertaintyState.UNKNOWN.value]
+
+            # Finding must NOT be discarded
+            assert len(unknown_dep.usages) >= 1
+            http_usage = unknown_dep.usages[0]
+            assert http_usage.evidence_type == EvidenceType.HTTP_CALL
+            assert http_usage.method == "POST"
+            assert http_usage.path == "https://api.custom-payment.net/v2/charge"
+            assert http_usage.line == 4

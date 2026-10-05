@@ -84,6 +84,44 @@ HTTP_LIBRARIES = {
     "http.client",
 }
 
+# Common development, testing, and build tools that are not external service APIs
+DEV_AND_BUILD_TOOLS = {
+    "pytest",
+    "pytest-asyncio",
+    "mypy",
+    "ruff",
+    "black",
+    "flake8",
+    "tox",
+    "wheel",
+    "setuptools",
+    "hatchling",
+    "flit",
+    "isort",
+    "coverage",
+    "pylint",
+    "bandit",
+    "pre-commit",
+    "twine",
+    "build",
+}
+
+
+def is_dev_tool(package_name: str) -> bool:
+    """Check if declared package is a standard build/test/lint tool rather than an API."""
+    normalized = package_name.lower().replace("_", "-")
+    return normalized in DEV_AND_BUILD_TOOLS or normalized.startswith(
+        ("pytest-", "flake8-", "mypy-")
+    )
+
+
+def is_stdlib_module(module_name: str) -> bool:
+    """Check if imported module belongs to the Python standard library."""
+    import sys
+
+    root_module = module_name.split(".")[0]
+    return root_module in sys.stdlib_module_names and not is_http_library(root_module)
+
 
 def attribute_package_name(package_name: str) -> str | None:
     """Map a package name from a dependency manifest to a provider ID."""
