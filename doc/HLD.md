@@ -269,13 +269,11 @@ For secure engineering, NIST SSDF provides a baseline for integrating secure-dev
 
 ## Table 2
 
-| Poovarasan S | 23CY038 |
+| TamilSelvan S | 23CY050 |
 
 | --- | --- |
 
-| Sachin P | 23CY045 |
-
-| Malleshwaran P | 23CY030 |
+| HarishKanna P | 23CY020 |
 
 | Pradeep S | 23CY039 |
 
