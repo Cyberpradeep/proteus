@@ -1,10 +1,12 @@
-"""Minimal CLI skeleton for PROTEUS foundation."""
+"""CLI interface for PROTEUS repository scanning and management."""
 
 import argparse
 import sys
 from collections.abc import Sequence
 
 import proteus
+from proteus.discovery.engine import DiscoveryEngine
+from proteus.models.inventory import ConfidenceLevel
 from proteus.storage.database import Database
 
 
@@ -30,6 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Command: scan
     scan_parser = subparsers.add_parser("scan", help="Scan repository for API dependencies")
     scan_parser.add_argument("repo_path", help="Path to repository to scan")
+    scan_parser.add_argument("--json", action="store_true", help="Output inventory as JSON")
 
     # Command: sources
     sources_parser = subparsers.add_parser("sources", help="Manage monitored API sources")
@@ -62,15 +65,84 @@ def run_cli(args: Sequence[str] | None = None) -> int:
         return 0
 
     if parsed.command == "version":
-        print(f"PROTEUS v{proteus.__version__} (Milestone A Foundation)")
+        print(f"PROTEUS v{proteus.__version__} (Milestone A Discovery)")
         return 0
 
     if parsed.command == "scan":
-        print(f"[PROTEUS] Scanning repository: {parsed.repo_path}")
-        print(
-            "[NOTICE] Foundation setup active. Full API Discovery engine "
-            "scheduled for Milestone A Discovery stage."
-        )
+        repo_path_input = parsed.repo_path
+        try:
+            engine = DiscoveryEngine()
+            inventory = engine.discover(repo_path_input)
+        except ValueError as e:
+            print(f"[ERROR] Invalid repository path: {e}", file=sys.stderr)
+            return 1
+        except Exception as e:
+            print(f"[ERROR] Discovery scan failed: {e}", file=sys.stderr)
+            return 1
+
+        if getattr(parsed, "json", False):
+            print(inventory.model_dump_json(indent=2))
+            return 0
+
+        # Formatted human-readable output
+        print("=" * 68)
+        print(" PROTEUS API DISCOVERY REPORT")
+        print("=" * 68)
+        print(f"Target Repository : {inventory.project_path}")
+        print(f"Discovered At     : {inventory.created_at.isoformat()}")
+        print(f"Files Scanned     : {inventory.metadata.get('files_scanned', 0)}")
+        print(f"Scan Errors       : {inventory.metadata.get('scan_errors', 0)}")
+        print(f"Total APIs Found  : {inventory.total_dependencies}")
+        print(f"Total Usages      : {inventory.total_usages}")
+        print("-" * 68)
+
+        # Categorize by confidence
+        confirmed = [d for d in inventory.dependencies if d.confidence == ConfidenceLevel.CONFIRMED]
+        strong = [d for d in inventory.dependencies if d.confidence == ConfidenceLevel.STRONG]
+        candidates = [
+            d for d in inventory.dependencies if d.confidence == ConfidenceLevel.CANDIDATE
+        ]
+        ambiguous = [d for d in inventory.dependencies if d.confidence == ConfidenceLevel.UNKNOWN]
+
+        if confirmed:
+            print("\n[CONFIRMED API DEPENDENCIES]")
+            for dep in confirmed:
+                sdk_str = f" (SDK: {dep.sdk})" if dep.sdk else ""
+                url_str = f" [Base: {dep.base_url}]" if dep.base_url else ""
+                print(f"  * {dep.provider}{sdk_str}{url_str} - {len(dep.usages)} usage(s):")
+                for u in dep.usages:
+                    op_str = u.operation or u.symbol or "unknown"
+                    path_str = f" path={u.path}" if u.path else ""
+                    print(f"    - {u.file}:{u.line} [{u.evidence_type.value}] {op_str}{path_str}")
+
+        if strong:
+            print("\n[STRONG EVIDENCE API DEPENDENCIES]")
+            for dep in strong:
+                sdk_str = f" (SDK: {dep.sdk})" if dep.sdk else ""
+                url_str = f" [Base: {dep.base_url}]" if dep.base_url else ""
+                print(f"  * {dep.provider}{sdk_str}{url_str} - {len(dep.usages)} usage(s):")
+                for u in dep.usages:
+                    op_str = u.operation or u.symbol or "unknown"
+                    print(f"    - {u.file}:{u.line} [{u.evidence_type.value}] {op_str}")
+
+        if candidates:
+            print("\n[CANDIDATE DEPENDENCIES (Declared / Imported Only - No Calls Observed)]")
+            for dep in candidates:
+                sdk_str = f" (SDK: {dep.sdk})" if dep.sdk else ""
+                print(f"  * {dep.provider}{sdk_str} - {len(dep.usages)} declaration(s):")
+                for u in dep.usages:
+                    print(f"    - {u.file}:{u.line} [{u.evidence_type.value}] {u.symbol}")
+
+        if ambiguous:
+            print("\n[AMBIGUOUS / UNKNOWN HTTP USAGES (Unresolved Host or Dynamic Endpoint)]")
+            for dep in ambiguous:
+                print(f"  * {dep.provider} - {len(dep.usages)} usage(s):")
+                for u in dep.usages:
+                    meth_str = f"{u.method} " if u.method else ""
+                    path_str = u.path or "unknown"
+                    print(f"    - {u.file}:{u.line} [{u.evidence_type.value}] {meth_str}{path_str}")
+
+        print("\n" + "=" * 68)
         return 0
 
     # Commands requiring database access

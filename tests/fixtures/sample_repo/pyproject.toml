@@ -3,5 +3,9 @@ name = "sample-consumer"
 version = "0.1.0"
 dependencies = [
     "google-genai>=0.1.0",
+    "openai>=1.20.0",
+    "stripe>=8.0.0",
+    "anthropic>=0.18.0",
+    "requests>=2.31.0",
     "httpx>=0.27.0",
 ]
