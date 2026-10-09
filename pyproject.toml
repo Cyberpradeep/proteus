@@ -2,7 +2,7 @@
 name = "proteus-core"
 version = "0.1.0"
 description = "Repository-Aware API Evolution Monitoring, Impact Analysis and Automated Repair"
-readme = "doc/README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 authors = [
     { name = "HarishKanna P", email = "23cy020@example.com" },
