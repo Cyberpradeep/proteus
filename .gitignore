@@ -28,3 +28,30 @@ scratch/
 dist/
 build/
 *.egg-info/
+
+# Executables, installers, and binary packages
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.dll
+*.so
+*.dylib
+*.bin
+*.iso
+*.zip
+*.tar.*
+*.7z
+
+# Environment variables and secrets
+.env
+.env.*
+*.pem
+*.key
+
+# IDE and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
